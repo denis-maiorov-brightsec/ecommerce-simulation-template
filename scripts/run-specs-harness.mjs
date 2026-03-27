@@ -8,6 +8,8 @@ const repoRoot = process.cwd();
 const defaultIndexPath = resolve(repoRoot, "docs/SPECS_INDEX.md");
 const defaultSpecsDir = resolve(repoRoot, "docs/specs");
 const defaultStackProfilePath = resolve(repoRoot, "docs/STACK_PROFILE.md");
+const implementerPromptPath = resolve(repoRoot, "prompts/02-implement-next-ready-spec.md");
+const reviewerPromptPath = resolve(repoRoot, "prompts/03-review-and-fix-last-spec.md");
 
 function printUsage() {
   console.log(`Usage: node scripts/run-specs-harness.mjs [options]
@@ -263,71 +265,37 @@ function readStackProfile(stackProfilePath) {
   return readFileSync(stackProfilePath, "utf8").trim();
 }
 
-function buildStackContext(stackProfilePath, stackProfile) {
-  const lines = [
-    "Stack context:",
-    `- Stack profile path: ${stackProfile ? stackProfilePath.replace(`${repoRoot}/`, "") : "<missing>"}`,
-  ];
+function toRepoRelativePath(path) {
+  return path.replace(`${repoRoot}/`, "");
+}
 
-  if (!stackProfile) {
-    lines.push("- Stack profile content: <missing>");
-    return lines.join("\n");
+function readPromptTemplate(promptPath) {
+  if (!existsSync(promptPath)) {
+    throw new Error(`Missing prompt template: ${promptPath}`);
   }
 
-  lines.push("", "Stack profile content:", stackProfile);
-  return lines.join("\n");
+  return readFileSync(promptPath, "utf8").trim();
 }
 
-function buildImplementerPrompt(spec, stackContext) {
-  return `
-You are the implementation agent for one spec in this repository.
+function buildPromptFromTemplate(template, spec, stackProfilePath, stackProfile) {
+  const lines = [
+    template,
+    "",
+    "Harness runtime context:",
+    `- Target spec ID: ${spec.id}`,
+    `- Target spec title: ${spec.title}`,
+    `- Target spec file: ${spec.path}`,
+    `- Stack profile path: ${stackProfile ? toRepoRelativePath(stackProfilePath) : "<missing>"}`,
+  ];
 
-Target spec:
-- ID: ${spec.id}
-- Title: ${spec.title}
-- File: ${spec.path}
+  if (stackProfile) {
+    lines.push("", "Stack profile content:", stackProfile);
+  }
+  else {
+    lines.push("- Stack profile content: <missing>");
+  }
 
-${stackContext}
-
-Requirements:
-1. Follow AGENTS.md exactly.
-2. Follow docs/STACK_PROFILE.md exactly.
-3. Implement only this spec's scope; do not pull future-spec behavior.
-4. If project scaffolding for this stack is incomplete, add only the minimal foundational setup required for this spec.
-5. Run relevant lint/tests/type-check for touched areas.
-6. Update docs/SPECS_INDEX.md status/dependencies if needed.
-7. Commit your implementation work before exiting.
-
-Commit constraints:
-- Use AGENTS.md commit style with spec id ${spec.id}.
-- Keep commits small and reviewable.
-- Stay on the current branch and do not create or switch branches.
-
-Output:
-- Short summary of files changed, acceptance checklist, tests executed.
-`.trim();
-}
-
-function buildReviewerPrompt(spec, stackContext) {
-  return `
-You are the reviewer/fixer agent for one completed spec implementation.
-
-Target spec:
-- ID: ${spec.id}
-- Title: ${spec.title}
-- File: ${spec.path}
-
-${stackContext}
-
-Tasks:
-1. Review current branch changes for conformance to the target spec.
-2. Focus on bugs, regressions, contract mismatches, missing tests, and risky behavior.
-3. If you find small issues, apply focused fixes only (no broad refactors).
-4. Run relevant tests/lint/type-check for touched areas.
-5. If fixes were made, commit them using AGENTS.md commit style with spec id ${spec.id}.
-6. If no fixes are required, leave the tree clean and explicitly state: No fixes required.
-7. Stay on the current branch and do not create or switch branches.
-`.trim();
+  return lines.join("\n").trim();
 }
 
 function runCodexExec({ codexBin, model, unsafe, prompt, outputFile }) {
@@ -397,7 +365,8 @@ function main() {
   const specs = parseSpecsIndex(args.indexPath, args.specsDir);
   const doneSet = new Set(specs.filter(spec => spec.status.toLowerCase() === "done").map(spec => spec.id));
   const stackProfile = readStackProfile(args.stackProfilePath);
-  const stackContext = buildStackContext(args.stackProfilePath, stackProfile);
+  const implementerPromptTemplate = readPromptTemplate(implementerPromptPath);
+  const reviewerPromptTemplate = readPromptTemplate(reviewerPromptPath);
 
   const runId = new Date().toISOString().replaceAll(":", "-");
   const runDir = resolve(repoRoot, ".codex-runs", runId);
@@ -426,7 +395,7 @@ function main() {
       codexBin: args.codexBin,
       model: args.model,
       unsafe: args.unsafe,
-      prompt: buildImplementerPrompt(next, stackContext),
+      prompt: buildPromptFromTemplate(implementerPromptTemplate, next, args.stackProfilePath, stackProfile),
       outputFile: resolve(runDir, `${next.id}-implementer.md`),
     });
 
@@ -452,7 +421,7 @@ function main() {
       codexBin: args.codexBin,
       model: args.model,
       unsafe: args.unsafe,
-      prompt: buildReviewerPrompt(next, stackContext),
+      prompt: buildPromptFromTemplate(reviewerPromptTemplate, next, args.stackProfilePath, stackProfile),
       outputFile: resolve(runDir, `${next.id}-reviewer.md`),
     });
 
